@@ -1,0 +1,6 @@
+.venv/
+*.csv
+!schedule.csv
+!cancellations.csv
+*.log
+co2_model.txt
