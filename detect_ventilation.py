@@ -12,7 +12,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-ROOM = "517"          # DB의 room_id 값 (센서 실제 위치는 617호, DB 정리 후 바꾸기)
+ROOM = "7"            # DB의 room_id (617호)
 MIN_EXCESS = 250      # 바깥보다 250ppm 이상 높을 때만 판단 (낮으면 잡음에 묻힘)
 RATIO = 3.0           # 평소보다 k가 3배 이상이면 환기로 판단
 MIN_K = 2.0           # 단, 시간당 2회 이상은 되어야 함
@@ -20,7 +20,7 @@ MIN_MINUTES = 4       # 4분 이상 이어져야 환기로 인정 (문 잠깐 �
 
 
 def load(path):
-    df = pd.read_csv(path, parse_dates=["measured_at"])
+    df = pd.read_csv(path, parse_dates=["measured_at"], date_format="mixed")
     df = df[df["room_id"].astype(str) == ROOM]
     # 센서 이상값 제거: MH-Z19 상한(5000)에 붙은 값, 1분 만에 1000ppm 넘게 튄 값
     df = df[df["co2"] < 4900]

@@ -4,3 +4,5 @@
 !cancellations.csv
 *.log
 co2_model.txt
+.env*
+__pycache__/

@@ -12,12 +12,12 @@ from sklearn.metrics import mean_absolute_error
 STEP_MIN = 5          # 5분 단위로 묶어서 학습
 HORIZON_MIN = 30      # 몇 분 뒤 CO2를 예측할지
 H = HORIZON_MIN // STEP_MIN
-ROOM = "517"          # DB의 room_id 값 (센서 실제 위치는 617호, DB 정리 후 바꾸기)
+ROOM = "7"            # DB의 room_id (617호)
 DAY_START, DAY_END = 8, 18   # 학습에 쓰는 시간대 (야간 수업 있으면 DAY_END 늘리기)
 
 
 def load_readings(path="readings.csv"):
-    df = pd.read_csv(path, parse_dates=["measured_at"])
+    df = pd.read_csv(path, parse_dates=["measured_at"], date_format="mixed")
     df = df[df["room_id"].astype(str) == ROOM]
     df = df[df["co2"] < 4900]                  # 센서 오작동값(상한 5000) 제거
     df = (df.set_index("measured_at")[["co2", "temp", "humidity"]]
@@ -35,11 +35,25 @@ def load_schedule(path="schedule.csv"):
     return s
 
 
+def load_cancellations(path="cancellations.csv"):
+    """휴강한 날짜 목록 (없으면 빈 목록). 형식: date 열에 2026-10-19"""
+    try:
+        c = pd.read_csv(path)
+        return set(pd.to_datetime(c["date"]).dt.date)
+    except FileNotFoundError:
+        return set()
+
+
+CANCELLED = set()
+
+
 def class_info(ts, sched):
     """시각 ts에 수업 중인지, 시작 후 몇 분인지, 다음 수업까지 몇 분인지"""
     dow = ts.dayofweek + 1
     tod = ts - ts.normalize()
     today = sched[sched["day_of_week"] == dow]
+    if ts.date() in CANCELLED:                 # 휴강한 날은 수업 없음으로 처리
+        today = today.iloc[0:0]
 
     now = today[(today["start"] <= tod) & (tod < today["end"])]
     in_class = int(len(now) > 0)
@@ -78,12 +92,17 @@ def build_features(df, sched):
     # 08시부터 남기는 이유: 09시 수업 전 사전 환기 예측이 핵심이라서
     t = data.index
     target_t = t + pd.Timedelta(minutes=HORIZON_MIN)
-    keep = (t.dayofweek < 5) & (t.hour >= DAY_START) & (target_t.hour < DAY_END)
+    keep = ((t.dayofweek < 5) & (t.hour >= DAY_START)
+            & (target_t.date == t.date) & (target_t.hour < DAY_END))   # 자정 넘어가는 구간 제외
     data = data[keep]
     return data.drop(columns="target"), data["target"]
 
 
 def main():
+    global CANCELLED
+    CANCELLED = load_cancellations()
+    if CANCELLED:
+        print(f"휴강일 {len(CANCELLED)}일 반영: {sorted(CANCELLED)}")
     df = load_readings()
     sched = load_schedule()
     X, y = build_features(df, sched)
