@@ -130,7 +130,7 @@ def rollout(c0, start, room_id, params, schedule, horizon=HORIZON_MIN):
             c = c - params["k"] * (c - params["c_out"])
         # 낮에 수업이 없는 시간은 "지금 값 유지" (빈 시간에도 사람이 드나들어서 감쇠를 가정하면 오히려 틀림: 617호 백테스트)
         t = t + timedelta(minutes=STEP_MIN)
-        out.append((t, max(c, 380.0)))
+        out.append((t, max(c, min(380.0, params.get("c_out", C_OUT)))))   # 하한: 바깥 기준 (센서마다 영점이 달라서 고정값 쓰면 안 됨)
     return out
 
 
