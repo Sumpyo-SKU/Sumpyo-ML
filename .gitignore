@@ -7,3 +7,4 @@ co2_model.txt
 .env*
 __pycache__/
 backfill_sim.py
+!schedule_all.csv
