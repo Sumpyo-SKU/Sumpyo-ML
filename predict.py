@@ -38,6 +38,15 @@ C_OUT = 420                    # 바깥 CO2 기본값 (방마다 최근 최저�
 FIT_DAYS = 7
 KEEP_PRED_DAYS = 3
 
+# 앱 조치 기록 없이 창문을 열어둔 기간 (학습·평가에서 제외). room_id: [(시작, 끝)]
+MANUAL_EXCLUDE = {
+    7: [("2026-10-21 12:50", "2026-10-23 00:00")],   # 617호: 10/21 12:50 창문 2개 열고 10/22에 닫음 → 10/22 통째로 제외
+}
+
+
+def manual_exclude(room_id):
+    return [(pd.Timestamp(a), pd.Timestamp(b)) for a, b in MANUAL_EXCLUDE.get(int(room_id), [])]
+
 # 데이터가 부족할 때 쓰는 기본값 (5분당)
 DEFAULT_K = 0.02               # 빈 강의실 감쇠 (5분당, 약 0.24회/시간 = 617호 실측)
 K_RANGE = (0.004, 0.06)        # 문 닫힌 강의실에서 물리적으로 가능한 범위 (약 0.05~0.7회/시간)
@@ -191,6 +200,7 @@ def run(conn, dry_run=False):
 
         w = windows[windows["room_id"] == room.id]
         excl = [(r.window_opened_at, r.closed_at if pd.notna(r.closed_at) else now) for r in w.itertuples()]
+        excl += manual_exclude(room.id)
         params = fit_room(s["co2"].dropna(), room.id, schedule, excl)
         preds = rollout(c0, now, room.id, params, schedule)
         for t, c in preds:

@@ -68,6 +68,8 @@ def schedule_for(sa, number, room_id, cancel_dates):
 def backtest(series, room_id, sch, start=None):
     """각 시점에서 그 이전 7일로만 학습 → 30분 뒤 예측. 평일 08~18시만 평가"""
     rows, params, last = [], None, None
+    excl = P.manual_exclude(room_id)
+    in_excl = lambda x: any(a <= x <= b for a, b in excl)
     for ts in series.index:
         if start is not None and ts < start:
             continue
@@ -76,11 +78,13 @@ def backtest(series, room_id, sch, start=None):
         tg = ts + timedelta(minutes=HORIZON)
         if tg not in series.index or tg.hour >= 18:
             continue
+        if in_excl(ts) or in_excl(tg):           # 창문 열어둔 기간은 평가에서 제외
+            continue
         hist = series[(series.index <= ts) & (series.index > ts - timedelta(days=P.FIT_DAYS))]
         if len(hist) < 48:
             continue
         if last is None or ts - last >= timedelta(hours=1):
-            params, last = P.fit_room(hist, room_id, sch), ts
+            params, last = P.fit_room(hist, room_id, sch, excl), ts
         pred = P.rollout(series[ts], ts, room_id, params, sch, horizon=HORIZON)[-1][1]
         rows.append((ts, tg, series[ts], series[tg], pred, sch.class_at(room_id, tg) is not None))
     return pd.DataFrame(rows, columns=["t", "target", "now", "true", "pred", "in_class"])
