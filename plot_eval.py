@@ -85,6 +85,7 @@ def backtest(series, room_id, sch, start=None):
             continue
         if last is None or ts - last >= timedelta(hours=1):
             params, last = P.fit_room(hist, room_id, sch, excl), ts
+        P.add_trend(params, hist, ts, room_id, sch)
         pred = P.rollout(series[ts], ts, room_id, params, sch, horizon=HORIZON)[-1][1]
         rows.append((ts, tg, series[ts], series[tg], pred, sch.class_at(room_id, tg) is not None))
     return pd.DataFrame(rows, columns=["t", "target", "now", "true", "pred", "in_class"])

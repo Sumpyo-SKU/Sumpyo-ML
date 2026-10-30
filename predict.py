@@ -5,6 +5,7 @@
 1. 강의실(type=LECTURE)이면서 센서가 있는 방(FULL·SIM)마다
    최근 7일 측정값으로 그 방의 CO2 변화 모델을 학습한다.
      수업 중:   ΔC(5분) = a − b·(C − 바깥)        바깥 = 그 방 최근 7일 최저치(2% 지점)     a = 사람이 내뿜는 양, b = 문틈·환기
+                지금 수업 중이면 최근 15분 실제 상승 속도를 a 하한으로 씀 (평소보다 사람이 많은 수업 대응)
      밤(19~07시): ΔC(5분) = −k·(C − 바깥)
      낮에 수업 없음: 지금 값 유지
    (시간표·휴강은 DB의 class_schedule, class_cancellation 사용)
@@ -29,18 +30,19 @@ import numpy as np
 import pandas as pd
 
 KST = ZoneInfo("Asia/Seoul")
-MODEL_VERSION = "greybox-v1"
+MODEL_VERSION = "greybox-v2"
 STEP_MIN = 5
 HORIZON_MIN = 120
 ALERT_WINDOW_MIN = 30          # 이 안에 기준을 넘으면 조치 생성
 THRESHOLD = int(os.getenv("CO2_THRESHOLD", "1000"))
 C_OUT = 420                    # 바깥 CO2 기본값 (방마다 최근 최저치로 다시 잡음: 센서 오차 보정)
-FIT_DAYS = 7
+FIT_DAYS = 7                   # 21일도 시험해 봤지만 시뮬 방 오차가 커짐 (백테스트)
 KEEP_PRED_DAYS = 3
 
-# 앱 조치 기록 없이 창문을 열어둔 기간 (학습·평가에서 제외). room_id: [(시작, 끝)]
+# 앱 조치 기록 없이 창문을 열어둔 기간, 평소와 다르게 쓴 기간 (학습·평가에서 제외). room_id: [(시작, 끝)]
 MANUAL_EXCLUDE = {
-    7: [("2026-10-21 12:50", "2026-10-23 00:00")],   # 617호: 10/21 12:50 창문 2개 열고 10/22에 닫음 → 10/22 통째로 제외
+    # 617호: 중간고사 10/20~26 (10/23 개교기념일, 10/21~22 창문 열어둔 기간 포함)
+    7: [("2026-10-20 00:00", "2026-10-27 00:00")],
 }
 
 
@@ -52,6 +54,7 @@ DEFAULT_K = 0.02               # 빈 강의실 감쇠 (5분당, 약 0.24회/시�
 K_RANGE = (0.004, 0.06)        # 문 닫힌 강의실에서 물리적으로 가능한 범위 (약 0.05~0.7회/시간)
 MIN_EXCESS = 60                # 바깥보다 이만큼은 높아야 감쇠율 학습에 씀 (낮으면 센서 잡음에 묻힘)
 MIN_CLASS_POINTS = 24          # 수업 중 5분 데이터가 이만큼은 있어야 a, b를 학습값으로 씀
+TREND_MIN = 15                 # 수업 중 최근 상승 속도를 볼 구간
 MIN_IDLE_POINTS = 48
 
 
@@ -125,7 +128,22 @@ def fit_room(series, room_id, schedule, exclude=()):
         a = float(max(a_fit, 0.0))           # 수업 중에 CO2가 안 오르는 방이면 0
         b = float(np.clip(b_fit, 0.0, 0.3))
         src = "fit"
-    return {"a": a, "b": b, "k": k, "c_out": c_out, "src": src, "n_class": len(cls), "n_idle": len(idle)}
+    return {"a": a, "b": b, "k": k, "c_out": c_out, "src": src, "n_class": len(cls), "n_idle": len(idle),
+            "a_trend": None}
+
+
+def add_trend(params, series, now, room_id, schedule):
+    """지금 수업 중이면 최근 15분 실제 상승 속도를 a 하한으로 (series: 5분 CO2, now까지)
+    617호 10/29처럼 평소보다 사람이 훨씬 많은 수업은 학습한 a로는 못 따라감"""
+    params["a_trend"] = None
+    if params["a"] is None or schedule.class_at(room_id, now) is None:
+        return params
+    prev = series[series.index <= now - timedelta(minutes=TREND_MIN)]
+    if series.empty or prev.empty or prev.index[-1] < now - timedelta(minutes=TREND_MIN + STEP_MIN):
+        return params
+    c_now = series.iloc[-1]
+    params["a_trend"] = float((c_now - prev.iloc[-1]) / (TREND_MIN / STEP_MIN) + params["b"] * (c_now - params["c_out"]))
+    return params
 
 
 def rollout(c0, start, room_id, params, schedule, horizon=HORIZON_MIN):
@@ -134,7 +152,10 @@ def rollout(c0, start, room_id, params, schedule, horizon=HORIZON_MIN):
     for _ in range(horizon // STEP_MIN):
         if schedule.class_at(room_id, t) is not None:
             if params["a"] is not None:
-                c = c + params["a"] - params["b"] * (c - params["c_out"])
+                a = params["a"]
+                if params.get("a_trend") is not None:
+                    a = max(a, params["a_trend"])
+                c = c + a - params["b"] * (c - params["c_out"])
         elif t.hour >= 19 or t.hour < 7:
             c = c - params["k"] * (c - params["c_out"])
         # 낮에 수업이 없는 시간은 "지금 값 유지" (빈 시간에도 사람이 드나들어서 감쇠를 가정하면 오히려 틀림: 617호 백테스트)
@@ -202,6 +223,7 @@ def run(conn, dry_run=False):
         excl = [(r.window_opened_at, r.closed_at if pd.notna(r.closed_at) else now) for r in w.itertuples()]
         excl += manual_exclude(room.id)
         params = fit_room(s["co2"].dropna(), room.id, schedule, excl)
+        add_trend(params, s["co2"].dropna(), now, room.id, schedule)
         preds = rollout(c0, now, room.id, params, schedule)
         for t, c in preds:
             pred_rows.append((room.id, now, t, int(round(c)),
@@ -293,7 +315,8 @@ def backtest(path, room_id=7, sched_path="schedule.csv", cancel_path="cancellati
             n_skip += 1
             continue
         if last_fit is None or t - last_fit >= timedelta(hours=1):
-            params, last_fit = fit_room(hist, room_id, schedule), t
+            params, last_fit = fit_room(hist, room_id, schedule, manual_exclude(room_id)), t
+        add_trend(params, hist, t, room_id, schedule)
         pred = rollout(s[t], t, room_id, params, schedule, horizon=30)[-1][1]
         errs_m.append(abs(pred - s[target]))
         errs_p.append(abs(s[t] - s[target]))
